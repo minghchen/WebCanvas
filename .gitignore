@@ -7,5 +7,5 @@ build/
 **/*.json
 
 **/result_logs/
-**/_results/
+*_results/
 LOGS/
