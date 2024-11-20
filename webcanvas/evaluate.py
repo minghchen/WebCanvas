@@ -109,7 +109,9 @@ def create_html_environment(mode):
         save_trace_enabled=False,
         sleep_after_execution=0.0,
         locale="en-US",
-        use_vimium_effect=True
+        use_vimium_effect=True,
+        hide_unexpanded_elements=True,
+        proxy_server="socks5://127.0.0.1:7890"
     )
 
 

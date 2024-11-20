@@ -50,7 +50,9 @@ class AsyncHTMLEnvironment:
         save_trace_enabled: bool = False,
         sleep_after_execution: float = 0.0,
         locale: str = "en-US",
-        use_vimium_effect=True
+        use_vimium_effect=True,
+        hide_unexpanded_elements=True,
+        proxy_server="http://127.0.0.1:8001"
     ):
         self.use_vimium_effect = use_vimium_effect
         self.mode = mode
@@ -65,7 +67,7 @@ class AsyncHTMLEnvironment:
         self.locale = locale
         self.context = None
         self.browser = None
-        self.proxy = {"server": "socks5://127.0.0.1:7890"}
+        self.proxy = {"server": proxy_server}
 
     async def page_on_handler(self, page):
         self.page = page
