@@ -107,10 +107,6 @@ def create_html_environment(mode):
         current_viewport_only=False,
         viewport_size={"width": 1080, "height": 720},
         save_trace_enabled=False,
-        sleep_after_execution=0.0,
-        locale="en-US",
-        use_vimium_effect=True,
-        hide_unexpanded_elements=True,
         proxy_server="socks5://127.0.0.1:7890"
     )
 
