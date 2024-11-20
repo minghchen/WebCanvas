@@ -1,0 +1,11 @@
+.vscode/
+*.DS_Store
+**/__pycache__
+build/
+*.egg-info/
+
+**/*.json
+
+**/result_logs/
+**/_results/
+LOGS/
