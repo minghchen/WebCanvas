@@ -118,6 +118,65 @@ class AsyncHTMLEnvironment:
             # logger.info(self.html_content)
             logger.info("-- Successfully fetch html content")
             tab_name = await self.page.title()
+            # get selectors of invisible elements
+            invisible_elements = await self.page.evaluate('''() => {
+                var allElements = document.querySelectorAll('*');
+                var invisibleElements = [];
+                function getSelector(element) {
+                    if (!element || element.nodeType !== 1) {
+                        throw new Error("Invalid DOM element provided.");
+                    }
+                    let selectorParts = [];
+                    let currentElement = element;
+                    while (currentElement) {
+                        let tagName = currentElement.tagName.toLowerCase();
+                        if (currentElement.id) {
+                            selectorParts.unshift(`#${currentElement.id}`);
+                            break;
+                        }
+                        let className = currentElement.className;
+                        if (className) {
+                            if (typeof className === "object" && "baseVal" in className) {
+                                className = className.baseVal; 
+                            }
+                            className = className.trim().split(/\s+/).sort().join('.');
+                            tagName += `.${className}`;
+                        }
+                        let siblingIndex = 1;
+                        let sibling = currentElement.previousElementSibling;
+                        while (sibling) {
+                            if (sibling.nodeType === 1) {
+                                siblingIndex++;
+                            }
+                            sibling = sibling.previousElementSibling;
+                        }
+                        if (currentElement.parentElement && currentElement.parentElement.children.length > 1) {
+                            tagName += `:nth-child(${siblingIndex})`;
+                        }
+                        selectorParts.unshift(tagName);
+                        currentElement = currentElement.parentElement;
+                        if (currentElement) {
+                            selectorParts.unshift(" > ");
+                        }
+                    }
+                    return selectorParts.length > 0 ? selectorParts.join("").replace(/ > $/, "") : ""; // 移除最后多余的 " > "
+                }                                                  
+                allElements.forEach(function(element) {
+                    const selector = getSelector(element);
+                    var styles = window.getComputedStyle(element);
+                    var isInvisible = (
+                        styles.getPropertyValue('display') === 'none' ||
+                        styles.getPropertyValue('visibility') === 'hidden' ||
+                        styles.getPropertyValue('opacity') === '0'
+                    );
+                    if (isInvisible) {
+                        invisibleElements.push(selector);
+                    }
+                });
+                return invisibleElements;
+            }''')
+            self.tree.invisible_elements = invisible_elements
+            # logger.info(f"invisible elements: {invisible_elements}")
             dom_tree = self.tree.build_dom_tree()
             observation = f"current web tab name is \'{tab_name}\'\n" + dom_tree
             if self.mode in ["d_v", "dom_v_desc", "vision_to_dom"]:

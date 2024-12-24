@@ -83,8 +83,10 @@ TypeList = [
 ]
 
 
-def stringfy_selector(string: str):
+def stringfy_selector(string):
     special_chars = '#.>+~[]():*^$|=%@!\''
+    if string is None:
+        return ""
     string = string.replace("\t", " ").replace("\n", " ").lstrip().rstrip()
     string = ' '.join(string.split())
     for char in special_chars:
