@@ -52,7 +52,7 @@ class AsyncHTMLEnvironment:
         locale: str = "en-US",
         use_vimium_effect=True,
         hide_unexpanded_elements=True,
-        proxy_server="http://127.0.0.1:8001"
+        proxy_server=None
     ):
         self.use_vimium_effect = use_vimium_effect
         self.mode = mode
@@ -67,7 +67,7 @@ class AsyncHTMLEnvironment:
         self.locale = locale
         self.context = None
         self.browser = None
-        self.proxy = {"server": proxy_server}
+        self.proxy = {"server": proxy_server} if proxy_server else None
 
     async def page_on_handler(self, page):
         self.page = page
@@ -99,26 +99,28 @@ class AsyncHTMLEnvironment:
             self.page = await self.context.new_page()
             # await self.page.set_viewport_size({"width": 1080, "height": 720}) if not self.mode == "dom" else None
             await self.page.goto(start_url, timeout=20000)
-            await self.page.wait_for_load_state("networkidle",timeout=20000)
-            await self.page.wait_for_timeout(2000)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         else:
             self.page = await self.context.new_page()
             # await self.page.set_viewport_size({"width": 1080, "height": 720}) if not self.mode == "dom" else None
             self.html_content = await self.page.content()
         # self.last_page = self.page
+    
+    async def update_html_content(self):
+        await self.page.wait_for_load_state("load",timeout=20000)
+        await self.page.wait_for_timeout(2000)
+        self.html_content = await self.page.content()
 
     async def get_obs(self) -> Union[str, Tuple[str, str]]:
         observation = ""
         observation_VforD = ""
         try:
             if not self.html_content.strip():
-                self.html_content = await self.retry_content()
+                await self.retry_html_content()
             self.tree.fetch_html_content(self.html_content)
-            # logger.info(self.html_content)
             logger.info("-- Successfully fetch html content")
             tab_name = await self.page.title()
-            # get selectors of invisible elements
+            # Get selectors of invisible elements
             invisible_elements = await self.page.evaluate('''() => {
                 var allElements = document.querySelectorAll('*');
                 var invisibleElements = [];
@@ -159,7 +161,7 @@ class AsyncHTMLEnvironment:
                             selectorParts.unshift(" > ");
                         }
                     }
-                    return selectorParts.length > 0 ? selectorParts.join("").replace(/ > $/, "") : ""; // 移除最后多余的 " > "
+                    return selectorParts.length > 0 ? selectorParts.join("").replace(/ > $/, ""):"";
                 }                                                  
                 allElements.forEach(function(element) {
                     const selector = getSelector(element);
@@ -182,12 +184,12 @@ class AsyncHTMLEnvironment:
             if self.mode in ["d_v", "dom_v_desc", "vision_to_dom"]:
                 observation_VforD = await self.capture()
         except Exception as e:
-            logger.error(f"-- Failed to fetch html content,error occur {e}")
+            logger.error(f"-- Failed to fetch html content, error occurred: {e}")
+
         if self.mode in ["d_v", "dom_v_desc", "vision_to_dom"]:
-            is_valid, message = is_valid_base64(
-                observation_VforD)
-            logger.info(
-                "Successfully fetch html content with observation_VforD:", message)
+            is_valid, message = is_valid_base64(observation_VforD)
+            logger.info("Successfully fetch html content with observation_VforD:", message)
+
         return (observation, observation_VforD) if self.mode in ["d_v", "dom_v_desc", "vision_to_dom"] else observation
 
     async def reset(self, start_url: str = ""):
@@ -214,8 +216,7 @@ class AsyncHTMLEnvironment:
                 # self.last_page = self.page
                 # self.page = await self.context.new_page()
                 await self.page.goto(url, timeout=10000)
-                await self.page.wait_for_timeout(2000)
-                self.html_content = await self.page.content()
+                await self.update_html_content()
             except:
                 try:
                     # self.last_page = self.page
@@ -226,7 +227,7 @@ class AsyncHTMLEnvironment:
                             element.click();   
                         }} 
                     }}''', selector)
-                    self.html_content = await self.page.content()
+                    await self.update_html_content()
                 except Exception as e:
                     raise e
         else:
@@ -241,14 +242,13 @@ class AsyncHTMLEnvironment:
                             element.click();   
                         }} 
                     }}''', selector)
-                await self.page.wait_for_timeout(1000)
-                self.html_content = await self.page.content()
+                await self.update_html_content()
             except Exception as e:
                 raise e
 
     async def goto(self, action):
         await self.load_page_with_retry(action['url'])
-        self.html_content = await self.page.content()
+        await self.update_html_content()
 
     async def fill_search(self, action):
         try:
@@ -265,7 +265,7 @@ class AsyncHTMLEnvironment:
             value = stringfy_value(action['fill_text'])
             await self.page.locator(selector).fill(value)
             await self.page.locator(selector).press("Enter")
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except:
             try:
                 selector = rf"{selector}"
@@ -280,7 +280,7 @@ class AsyncHTMLEnvironment:
                         }}
                     }}
                 ''', selector)
-                self.html_content = await self.page.content()
+                await self.update_html_content()
             except Exception as e:
                 raise e
 
@@ -298,7 +298,7 @@ class AsyncHTMLEnvironment:
         try:
             value = stringfy_value(action['fill_text'])
             await self.page.locator(selector).fill(value)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except:
             try:
                 selector = rf"{selector}"
@@ -311,21 +311,21 @@ class AsyncHTMLEnvironment:
                         }}
                     }}
                 ''', selector)
-                self.html_content = await self.page.content()
+                await self.update_html_content()
             except Exception as e:
                 raise e
 
     async def search(self, action):
         await self.page.goto("https://www.google.com/search?q="+action["fill_text"], timeout=30000)
         await self.page.wait_for_timeout(2000)
-        self.html_content = await self.page.content()
+        await self.update_html_content()
 
     async def go_back_last_page(self, action):
         # self.page = self.last_page
         # self.last_page = self.page
         await self.page.go_back()
         await self.page.wait_for_timeout(2000)
-        self.html_content = await self.page.content()
+        await self.update_html_content()
 
     async def select_option(self, action):
         try:
@@ -369,8 +369,7 @@ class AsyncHTMLEnvironment:
                     option.parentElement.dispatchEvent(new Event('change'));
                 }}
             }}''', selector)
-            await self.page.wait_for_timeout(2000)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except Exception as e:
             raise e
 
@@ -387,7 +386,7 @@ class AsyncHTMLEnvironment:
                 f"selector:{selector},label_name:{label},element_id: {element_id},error ({e}) in hover action.")
         try:
             await self.page.hover(selector)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except:
             hover = '''() => {
                         var element = document.querySelector('%s');
@@ -397,7 +396,7 @@ class AsyncHTMLEnvironment:
                     }
                 ''' % selector
             await self.page.evaluate(hover)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
 
     async def scroll_down(self):
         try:
@@ -405,7 +404,7 @@ class AsyncHTMLEnvironment:
             viewport_height = await self.page.evaluate("window.innerHeight")
             if total_height < viewport_height:
                 await self.page.evaluate("window.scrollBy(0, 500)")
-                self.html_content = await self.page.content()
+                await self.update_html_content()
             current_scroll = await self.page.evaluate("window.pageYOffset")
             remaining_height = total_height - current_scroll - viewport_height
             if remaining_height <= viewport_height:
@@ -413,10 +412,10 @@ class AsyncHTMLEnvironment:
             else:
                 scroll_amount = current_scroll + viewport_height * 0.75
                 await self.page.evaluate(f"window.scrollTo(0, {scroll_amount})")
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except:
             await self.page.mouse.wheel(0, 100)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
 
     async def scroll_up(self):
         try:
@@ -428,10 +427,10 @@ class AsyncHTMLEnvironment:
                 else:
                     scroll_amount = current_scroll - viewport_height / 2
                 await self.page.evaluate(f"window.scrollTo(0, {scroll_amount})")
-            self.html_content = await self.page.content()
+            await self.update_html_content()
         except:
             await self.page.mouse.wheel(0, -100)
-            self.html_content = await self.page.content()
+            await self.update_html_content()
 
     async def execute_action(self, action: Action) -> Union[str, Tuple[str, str]]:
         """
@@ -518,21 +517,21 @@ class AsyncHTMLEnvironment:
                         action['action_type'], error_message) from e
             case ActionTypes.NONE:
                 try:
-                    self.html_content = await self.page.content()
+                    await self.update_html_content()
                 except Exception as e:
                     error_message = f"An error({e}) occur"
                     raise ActionExecutionError(
                         action['action_type'], error_message) from e
             case ActionTypes.CACHE_DATA:
                 try:
-                    self.html_content = await self.page.content()
+                    await self.update_html_content()
                 except Exception as e:
                     error_message = f"An error({e}) occur"
                     raise ActionExecutionError(
                         action['action_type'], error_message) from e
             case ActionTypes.GET_FINAL_ANSWER:
                 try:
-                    self.html_content = await self.page.content()
+                    await self.update_html_content()
                 except Exception as e:
                     error_message = f"An error({e}) occur"
                     raise ActionExecutionError(
@@ -612,16 +611,15 @@ class AsyncHTMLEnvironment:
                             f"Max retries {retries} reached, giving up.")
                         raise
 
-    async def retry_content(self, max_retries=3):
+    async def retry_html_content(self, max_retries=3):
         retry_count = 0
         while retry_count < max_retries:
             try:
                 await self.page.reload()
-                await self.page.wait_for_timeout(3000)
-                content = await self.page.content()
-                if not content.strip():
+                await self.update_html_content()
+                if not self.html_content.strip():
                     raise ValueError("Page content is empty")
-                return content
+                return self.html_content
             except PlaywrightError as e:
                 logger.error(
                     f"Page load timed out or encountered an error, retrying ({retry_count + 1}/{max_retries}): {e}")

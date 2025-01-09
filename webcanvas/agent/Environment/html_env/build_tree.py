@@ -27,15 +27,14 @@ class HTMLTree:
         Fetch the html content to extract and prune the DOM tree based on visibility styles.
         """
         self.__init__()
-        parser = etree.HTMLParser()
+        parser = etree.HTMLParser(remove_comments=True)
         self.tree = etree.parse(StringIO(html_content), parser)
         self.copy_tree = copy.deepcopy(self.tree)
         root = self.tree.getroot()
-
         self.init_html_tree(root)
         self.build_html_tree(root)
         return self.prune_tree()
-    
+
     @staticmethod
     def build_node(node, idx: int) -> ElementNode:
         elementNode = ElementNode()
@@ -63,7 +62,7 @@ class HTMLTree:
         node_id = 0
         while node_queue:
             node = node_queue.popleft()
-            self.elementNodes[node_id] = HTMLTree().build_node(node, node_id)
+            self.elementNodes[node_id] = self.build_node(node, node_id)
             self.rawNode2id[node] = node_id
             node_id += 1
             for child in node.getchildren():
@@ -114,33 +113,38 @@ class HTMLTree:
         return "/" + current_tag_name + locator_str
 
     def get_selector(self, idx: int) -> str:
-        selector_parts = []
-        current_node = self.pruningTreeNode[idx]
+        selector_str = ""
+        current_node = self.elementNodes[idx]
         while current_node["parentId"] != -1:
-            tag_name = str(current_node["tagName"])
-            if "id" in current_node["attributes"]:
-                selector_parts.insert(0, f'#{current_node["attributes"]["id"]}')
-                break
-            class_name = current_node["attributes"].get("class", "")
-            if isinstance(class_name, str):
-                class_name = class_name.strip().split()
-                class_name.sort()
-                class_name = ".".join(class_name)
-                if class_name:
-                    tag_name += f'.{class_name}'
-            # Calculate sibling index
-            sibling_index = 1
-            parent_id = current_node["parentId"]
-            parent_node = self.pruningTreeNode[parent_id]
-            for sibling_id in parent_node["childIds"]:
-                if sibling_id == current_node["nodeId"]:
-                    break
-                sibling_index += 1
-            if len(parent_node["childIds"]) > 1:
-                tag_name += f':nth-child({sibling_index})'
-            selector_parts.insert(0, tag_name)
-            current_node = parent_node
-        return " > ".join(selector_parts)
+            tag_name = current_node["tagName"]
+            siblingId = str(current_node["siblingId"])
+            if current_node["attributes"].get('id'):
+                current_selector = stringfy_selector(
+                    current_node["attributes"].get('id'))
+                return "#" + current_selector + selector_str
+            if len(self.elementNodes[current_node["parentId"]]["childIds"]) > 1:
+                uu_twin_node = True
+                uu_id = True
+                for childId in self.elementNodes[current_node["parentId"]]["childIds"]:
+                    sib_node = self.elementNodes[childId]
+                    if sib_node["nodeId"] != current_node["nodeId"] and current_node["attributes"].get('class') and sib_node["attributes"].get("class") == current_node["attributes"].get('class'):
+                        uu_twin_node = False
+                    if sib_node["nodeId"] != current_node["nodeId"] and current_node["tagName"] == sib_node["tagName"]:
+                        uu_id = False
+                if uu_id:
+                    selector_str = " > " + tag_name + selector_str
+                elif current_node["attributes"].get('class') and uu_twin_node is True:
+                    # fix div.IbBox.Whs\(n\)
+                    selector_str = " > " + tag_name + "." + \
+                        stringfy_selector(
+                            current_node["attributes"].get('class')) + selector_str
+                else:
+                    selector_str = " > " + tag_name + \
+                        ":nth-child(" + siblingId + ")" + selector_str
+            else:
+                selector_str = " > " + tag_name + selector_str
+            current_node = self.elementNodes[current_node["parentId"]]
+        return current_node["tagName"] + selector_str
 
     def is_valid(self, idx: int) -> bool:
         node = self.pruningTreeNode[idx]
@@ -234,6 +238,35 @@ class HTMLTree:
             child_node = self.pruningTreeNode[child_id]
             self.set_invalid_children(child_node) 
 
+    def get_node_selector(self, idx: int) -> str:
+        selector_parts = []
+        current_node = self.elementNodes[idx]
+        while current_node["parentId"] != -1:
+            tag_name = str(current_node["tagName"])
+            if "id" in current_node["attributes"]:
+                selector_parts.insert(0, f'#{current_node["attributes"]["id"]}')
+                break
+            class_name = current_node["attributes"].get("class", "")
+            if isinstance(class_name, str):
+                class_name = class_name.strip().split()
+                class_name.sort()
+                class_name = ".".join(class_name)
+                if class_name:
+                    tag_name += f'.{class_name}'
+            # Calculate sibling index
+            sibling_index = 1
+            parent_id = current_node["parentId"]
+            parent_node = self.elementNodes[parent_id]
+            for sibling_id in parent_node["childIds"]:
+                if sibling_id == current_node["nodeId"]:
+                    break
+                sibling_index += 1
+            if len(parent_node["childIds"]) > 1:
+                tag_name += f':nth-child({sibling_index})'
+            selector_parts.insert(0, tag_name)
+            current_node = parent_node
+        return " > ".join(selector_parts)
+    
     def build_dom_tree(self) -> str:
         root = self.pruningTreeNode[0]
         stack = [(root, 0)]
@@ -250,7 +283,7 @@ class HTMLTree:
                 self.set_invalid(node)
                 self.set_invalid_children(node)
                 continue
-            if self.get_selector(node["nodeId"]) in self.invisible_elements:
+            if self.get_node_selector(node["nodeId"]) in self.invisible_elements:
                 self.set_invalid(node)
                 self.set_invalid_children(node)
                 continue
@@ -276,7 +309,7 @@ class HTMLTree:
                         current_node = descendant_stack.pop()
                         for child_id in reversed(current_node["childIds"]): 
                             child_node = self.pruningTreeNode[child_id]
-                            child_content = HTMLTree().process_element_contents(child_node)
+                            child_content = self.process_element_contents(child_node)
                             if re.search(r'[a-zA-Z0-9]', child_content):
                                 if haspopup:
                                     child_node["attributes"]["aria-haspopup"] = haspopup
@@ -309,8 +342,8 @@ class HTMLTree:
                     # If the node is not expanded, skip it
                     if expanded == "false":
                         continue
-            if node_has_content and (actual_depth + 1) not in effective_depths:
-                effective_depths[actual_depth + 1] = effective_indent_level + 1
+            if node_has_content:
+                effective_depths[actual_depth + 1] = effective_depths[actual_depth] + 1
             children = [self.pruningTreeNode[child_id] for child_id in node["childIds"]]
             for child in reversed(children):
                 stack.append((child, actual_depth + 1))

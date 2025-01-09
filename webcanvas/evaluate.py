@@ -107,7 +107,7 @@ def create_html_environment(mode):
         current_viewport_only=False,
         viewport_size={"width": 1080, "height": 720},
         save_trace_enabled=False,
-        proxy_server="socks5://127.0.0.1:7890"
+        # proxy_server="socks5://127.0.0.1:7890"
     )
 
 
