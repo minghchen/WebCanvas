@@ -38,7 +38,7 @@ class ActiveElements:
 
     @staticmethod
     def get_element_tagName(element: ElementNode) -> str:
-        tag_name = element["tagName"].lower()
+        tag_name = element["tagName"]
         if tag_name == 'input':
             input_type = element["attributes"].get('type')
             if input_type == 'checkbox':
@@ -109,21 +109,21 @@ class ActiveElements:
     def get_element_value(element: ElementNode) -> str:
         if element["text"]:
             return element["text"]
-        title = element['attributes'].get('title')
-        if title:
-            return title
-        placeholder = element['attributes'].get('placeholder')
-        if placeholder:
-            return placeholder
-        aria_label = element['attributes'].get('aria-label')
-        if aria_label:
-            return aria_label
-        aria_checked = element['attributes'].get('aria-checked')
-        if aria_checked:
-            return aria_checked
-        element_type = element["attributes"].get('type')
-        if element_type in TypeList:
-            return element_type
-        if element["tagName"] == "select":
-            return "Select an option value"
+        # title = element['attributes'].get('title')
+        # if title:
+        #     return title
+        # placeholder = element['attributes'].get('placeholder')
+        # if placeholder:
+        #     return placeholder
+        # aria_label = element['attributes'].get('aria-label')
+        # if aria_label:
+        #     return aria_label
+        # aria_checked = element['attributes'].get('aria-checked')
+        # if aria_checked:
+        #     return aria_checked
+        # element_type = element["attributes"].get('type')
+        # if element_type in TypeList:
+        #     return element_type
+        # if element["tagName"] == "select":
+        #     return "Select an option value"
         return ""

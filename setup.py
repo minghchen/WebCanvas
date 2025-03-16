@@ -7,6 +7,9 @@ setup(
     description="A toolkit for web agent development and evaluation",
     url="https://github.com/iMeanAI/WebCanvas",
     packages=find_packages(),
+    package_data={
+        "webcanvas": ["**/*.js"],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
@@ -19,7 +22,7 @@ setup(
         "retry==0.9.2",
         "sanic==23.6.0",
         "gymnasium",
-        "playwright==1.32.1",
+        "playwright>=1.32.1",
         "Pillow",
         "evaluate",
         "openai",

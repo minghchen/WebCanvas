@@ -18,7 +18,7 @@ class HTMLTree:
         self.id2rawNode: dict = {}
         self.valid: list[bool] = [False] * 100000
         self.nodeCounts: int
-        self.nodeDict = {}
+        self.nodeDict = [0] * 100000
         self.element_value = {}
         self.invisible_elements=[]
     
@@ -94,57 +94,13 @@ class HTMLTree:
                 sibling_id += 1
         self.pruningTreeNode = copy.deepcopy(self.elementNodes)
 
-    def get_xpath(self, idx: int) -> str:
-        locator_str = ""
-        current_node = self.elementNodes[idx]
-        tag_name = current_node["tagName"]
-        twinId = current_node["twinId"]
-        locator_str = "/" + tag_name + "[" + str(twinId) + "]"
-        while current_node["parentId"] != 0:
-            parentid = current_node["parentId"]
-            current_node = self.elementNodes[parentid]
-            current_tag_name = current_node["tagName"]
-            twinId = current_node["twinId"]
-            locator_str = "/" + current_tag_name + \
-                "[" + str(twinId) + "]" + locator_str
-        parentid = current_node["parentId"]
-        current_node = self.elementNodes[parentid]
-        current_tag_name = current_node["tagName"]
-        return "/" + current_tag_name + locator_str
-
-    def get_selector(self, idx: int) -> str:
-        selector_str = ""
-        current_node = self.elementNodes[idx]
-        while current_node["parentId"] != -1:
-            tag_name = current_node["tagName"]
-            siblingId = str(current_node["siblingId"])
-            if current_node["attributes"].get('id'):
-                current_selector = stringfy_selector(
-                    current_node["attributes"].get('id'))
-                return "#" + current_selector + selector_str
-            if len(self.elementNodes[current_node["parentId"]]["childIds"]) > 1:
-                uu_twin_node = True
-                uu_id = True
-                for childId in self.elementNodes[current_node["parentId"]]["childIds"]:
-                    sib_node = self.elementNodes[childId]
-                    if sib_node["nodeId"] != current_node["nodeId"] and current_node["attributes"].get('class') and sib_node["attributes"].get("class") == current_node["attributes"].get('class'):
-                        uu_twin_node = False
-                    if sib_node["nodeId"] != current_node["nodeId"] and current_node["tagName"] == sib_node["tagName"]:
-                        uu_id = False
-                if uu_id:
-                    selector_str = " > " + tag_name + selector_str
-                elif current_node["attributes"].get('class') and uu_twin_node is True:
-                    # fix div.IbBox.Whs\(n\)
-                    selector_str = " > " + tag_name + "." + \
-                        stringfy_selector(
-                            current_node["attributes"].get('class')) + selector_str
-                else:
-                    selector_str = " > " + tag_name + \
-                        ":nth-child(" + siblingId + ")" + selector_str
-            else:
-                selector_str = " > " + tag_name + selector_str
-            current_node = self.elementNodes[current_node["parentId"]]
-        return current_node["tagName"] + selector_str
+    def _get_xpath(self, idx: int) -> str:
+        xpath = self.elementNodes[idx].get("xpath")
+        return xpath
+    
+    def _get_selector(self, idx: int):
+        selector = self.elementNodes[idx].get("selector")
+        return selector
 
     def is_valid(self, idx: int) -> bool:
         node = self.pruningTreeNode[idx]
@@ -199,167 +155,210 @@ class HTMLTree:
         html_content = node["htmlContents"]
         return html_content
     
-    def get_tag_name(self, element: ElementNode) -> (str, int, str):  # type: ignore
+    def resolve_element_semantics(self, element: ElementNode) -> (str, int, str):  # type: ignore
+        """Resolves the semantic information of the element, including tag name, tag index and valid content"""
         tag_name = ActiveElements.get_element_tagName(element)
         tag_idx = element["nodeId"]
-        validContent=HTMLTree().process_element_contents(element)
+        validContent = self.process_element_contents(element)
         
         if tag_name == "span":
+            # If the tag name is span, traverse the parent and grandparent nodes to merge the span content
             parent_id = element["parentId"]
             if parent_id != -1: 
                 parent_node = self.pruningTreeNode[parent_id]
-                parent_tag_name, parent_tag_idx, _ = self.get_tag_name(parent_node)
-                for sibling_id in parent_node["childIds"]:
-                    sibling_node = self.pruningTreeNode[sibling_id]
-                    if sibling_node["tagName"] == "span" and sibling_id!=element["nodeId"]:
-                        validContent += HTMLTree().process_element_contents(sibling_node)
-                        self.set_invalid(sibling_node)  # Mark sibling as invalid
-            return parent_tag_name, tag_idx, validContent
+                parent_tag_name, parent_tag_idx, _ = self.resolve_element_semantics(parent_node)
+                # Limit traversal to two levels
+                for child_id in parent_node["childIds"]:
+                    child_node = self.pruningTreeNode[child_id]
+                    if child_node.get("tagName") == "span":
+                        validContent =validContent + self.process_element_contents(child_node) + ' '
+                        self.set_invalid(child_node)  # Mark child as invalid
+                    # Traverse one more level
+                    for grandchild_id in child_node["childIds"]:
+                        grandchild_node = self.pruningTreeNode[grandchild_id]
+                        if grandchild_node.get("tagName") == "span":
+                            validContent = validContent + self.process_element_contents(grandchild_node) + ' '
+                            self.set_invalid(grandchild_node)  # Mark grandchild as invalid
+            return (parent_tag_name, tag_idx, validContent)
 
         if tag_name == "unknown":
             tag_name = element["tagName"]
             tag_idx = element["nodeId"]
-            validContent=HTMLTree().process_element_contents(element)
+            validContent = self.process_element_contents(element)
             if tag_name in MapTagNameList:
+                # If tag name is in MapTagNameList, return the parent tag name
                 parent_node = self.pruningTreeNode[element["parentId"]]
-                parent_tag_name, parent_tag_idx, _ = self.get_tag_name(parent_node)
-                return parent_tag_name, tag_idx, validContent
+                parent_tag_name, parent_tag_idx, _ = self.resolve_element_semantics(parent_node)
+                return (parent_tag_name, tag_idx, validContent)
             else:
+                # If tag name is not in MapTagNameList, return statictext
                 return ("statictext", tag_idx, validContent)
         return (tag_name, tag_idx, validContent)
 
     def set_invalid(self, node: ElementNode) -> None:
+        """Set the node as invalid"""
         node_id = node["nodeId"]
         self.valid[node_id] = False
         node["htmlContents"] = "" 
 
     def set_invalid_children(self, node: ElementNode) -> None:
+        """Set all the descendants of the node as invalid"""
         for child_id in node["childIds"]:
             child_node = self.pruningTreeNode[child_id]
             self.set_invalid_children(child_node) 
 
-    def get_node_selector(self, idx: int) -> str:
-        selector_parts = []
-        current_node = self.elementNodes[idx]
-        while current_node["parentId"] != -1:
-            tag_name = str(current_node["tagName"])
-            if "id" in current_node["attributes"]:
-                selector_parts.insert(0, f'#{current_node["attributes"]["id"]}')
-                break
-            class_name = current_node["attributes"].get("class", "")
-            if isinstance(class_name, str):
-                class_name = class_name.strip().split()
-                class_name.sort()
-                class_name = ".".join(class_name)
-                if class_name:
-                    tag_name += f'.{class_name}'
-            # Calculate sibling index
-            sibling_index = 1
-            parent_id = current_node["parentId"]
-            parent_node = self.elementNodes[parent_id]
-            for sibling_id in parent_node["childIds"]:
-                if sibling_id == current_node["nodeId"]:
-                    break
-                sibling_index += 1
-            if len(parent_node["childIds"]) > 1:
-                tag_name += f':nth-child({sibling_index})'
-            selector_parts.insert(0, tag_name)
-            current_node = parent_node
-        return " > ".join(selector_parts)
-    
-    def build_dom_tree(self) -> str:
-        root = self.pruningTreeNode[0]
-        stack = [(root, 0)]
-        contents = ""
+    def _build_dom_tree(self, eval_page: dict) -> str:
+        """Parse the node from eval_page and build the DOM tree"""
+        js_node_map = eval_page.get('map')
+        js_root_id = eval_page.get('root')
+        if js_node_map is None or js_root_id is None:
+            return ""
+
+        # Parse the node
+        for id, node_data in js_node_map.items():
+            node, child_ids = self._parse_node(node_data)
+            if node is None:
+                continue
+
+            self.elementNodes[int(id)] = node
+            self.valid[int(id)] = True
+
+            # Add child nodes to the current node
+            if node.get('type') == 'ELEMENT_NODE':
+                node["childIds"].extend(filter(None, child_ids))
+
+        # Add parent nodes to the child nodes
+        for node in self.elementNodes:
+            for child_id in node["childIds"]:
+                if isinstance(child_id, int):
+                    self.elementNodes[child_id]["parentId"] = node["nodeId"]
+
+        self.nodeCounts = len(js_node_map)
+        self.elementNodes = self.elementNodes[:self.nodeCounts]
+        self.pruningTreeNode = copy.deepcopy(self.elementNodes)
+        # logging.info(self.pruningTreeNode)
+
+        # Start building the DOM tree
+        stack = [(self.pruningTreeNode[js_root_id], 0)]
         num = 0
+        contents = []
         effective_depths = {}
         last_content_depth = -1
 
         while stack:
-            node, actual_depth = stack.pop()
-
-            # Check if the node is visible
-            if not ActiveElements.is_visiable(node):
-                self.set_invalid(node)
-                self.set_invalid_children(node)
-                continue
-            if self.get_node_selector(node["nodeId"]) in self.invisible_elements:
-                self.set_invalid(node)
-                self.set_invalid_children(node)
+            node, current_depth = stack.pop()
+            if node is None or not self.valid[node["nodeId"]]:
                 continue
 
-            node_has_content = False
-            if self.valid[node["nodeId"]]:
-                tag_name, tag_idx, validContent = self.get_tag_name(node)
-                content_text = validContent if validContent else HTMLTree().process_element_contents(node)
-                num += 1
-                self.nodeDict[num] = tag_idx
+            tag_name, tag_idx, validContent = self.resolve_element_semantics(node)
+            content_text = validContent or self.process_element_contents(node)
+            num += 1
+            self.nodeDict[num] = tag_idx
+            attributes_text = self._get_attributes_string(node)
 
-                # Process the node attributes
-                attributes = []
-                expanded = node["attributes"].get("aria-expanded")
-                haspopup = node["attributes"].get("aria-haspopup")
-                focused = node["attributes"].get("focused")
-                selected = node["attributes"].get("selected")
+            # If the node itself has no content, pass attributes to the first descendant with content
+            if not re.search(r'[a-zA-Z0-9]', content_text) and attributes_text:
+                descendant_stack = [node]
+                while descendant_stack:
+                    current_node = descendant_stack.pop()
+                    for child_id in reversed(current_node["childIds"]):
+                        child_node = self.pruningTreeNode[child_id]
+                        child_content = self.process_element_contents(child_node)
+                        if re.search(r'[a-zA-Z0-9]', child_content):
+                            for attr in ["aria-expanded", "aria-haspopup", "focused", "selected"]:
+                                if attr in node["attributes"]:
+                                    child_node["attributes"][attr] = node["attributes"][attr]
+                            descendant_stack = []  # Exit the loop
+                            break
+                        descendant_stack.append(child_node)
 
-                # If the node itself has no content, pass attributes to the first descendant with content
-                if not node_has_content and (haspopup or expanded):
-                    descendant_stack = [node]
-                    while descendant_stack:
-                        current_node = descendant_stack.pop()
-                        for child_id in reversed(current_node["childIds"]): 
-                            child_node = self.pruningTreeNode[child_id]
-                            child_content = self.process_element_contents(child_node)
-                            if re.search(r'[a-zA-Z0-9]', child_content):
-                                if haspopup:
-                                    child_node["attributes"]["aria-haspopup"] = haspopup
-                                if expanded:
-                                    child_node["attributes"]["aria-expanded"] = expanded
-                                descendant_stack = []  # Exit the loop
-                                break
-                            descendant_stack.append(child_node)
+            if re.search(r'[a-zA-Z0-9]', content_text) and node.get("isVisible"):
+                if current_depth not in effective_depths:
+                    effective_depths[current_depth] = effective_depths.get(last_content_depth, -1) + 1
+                    last_content_depth = current_depth
+                effective_indent_level = effective_depths[current_depth]
+                contents.append("  " * effective_indent_level + f"[{num}] {tag_name} '{content_text.strip()}' {attributes_text}\n")
+                self.element_value[str(tag_idx)] = content_text
 
-                if haspopup:
-                    attributes.append(f" hasPopup: {haspopup}")
-                if expanded:
-                    attributes.append(f" expanded: {expanded}")
-                if focused:
-                    attributes.append(f" focused: {focused}")
-                if selected:
-                    attributes.append(f" selected: {selected}")
-                attributes_text = " ".join(attributes)
-
-                # Process the node content
-                if node_has_content or re.search(r'[a-zA-Z0-9]', content_text):
-                    if actual_depth not in effective_depths:
-                        effective_depths[actual_depth] = effective_depths[last_content_depth] + 1 if last_content_depth in effective_depths else 0
-                        last_content_depth = actual_depth
-                    effective_indent_level = effective_depths[actual_depth]
-                    contents += "  " * effective_indent_level + "[" + str(num) + "] " + tag_name + \
-                                " " + f"'{content_text}'" + attributes_text + "\n"
-                    self.element_value[str(tag_idx)] = content_text
-                    node_has_content = True
-                    # If the node is not expanded, skip it
-                    if expanded == "false":
-                        continue
-            if node_has_content:
-                effective_depths[actual_depth + 1] = effective_depths[actual_depth] + 1
+            # Adjust depth for children
             children = [self.pruningTreeNode[child_id] for child_id in node["childIds"]]
             for child in reversed(children):
-                stack.append((child, actual_depth + 1))
-        return contents
+                stack.append((child, current_depth + 1))
+
+        return ''.join(contents)
+
+    def _get_attributes_string(self, node: ElementNode) -> str:
+        """Get the expanded, haspopup, focused, selected attributes of the node"""
+        attributes = []
+        for attr in ["aria-expanded", "aria-haspopup", "focused", "selected"]:
+            value = node.get("attributes").get(attr)
+            if value:
+                attributes.append(f'{attr.split("-")[-1]}: {value}')
+        return ' '.join(attributes)
     
+    def _parse_node(self, node_data: dict) -> ElementNode:
+        """Process the node from dict to ElementNode"""
+        if not node_data:
+            return None, []
+
+        # Parse text nodes
+        if node_data.get('type') == 'TEXT_NODE':
+            text_node = ElementNode(
+                nodeId = node_data.get('index', -1),
+                type = "TEXT_NODE",
+                childIds = [],
+                parentId = None,
+                tagName = node_data.get('tagName', ''),
+                text = node_data.get('text', ''),
+                attributes = node_data.get('attributes', {}),
+                selector = node_data.get('selector', ''),
+                xpath = node_data.get('xpath', ''),
+                isVisible = node_data.get('isVisible', False),
+			)
+            return text_node, []
+        
+        # Parse element nodes
+        element_node = ElementNode(
+            nodeId = node_data.get('index', -1),
+            type = "ELEMENT_NODE",
+            childIds = [],
+            parentId = None,
+            tagName = node_data.get('tagName', ''),
+            text = node_data.get('text', ''),
+            attributes = node_data.get('attributes', {}),
+            selector = node_data.get('selector', ''),
+            xpath = node_data.get('xpath', ''),
+            isVisible = node_data.get('isVisible', False),
+        )
+
+        # Combine pseudo-element text with node text
+        pseudo_elements = node_data.get('pseudoElements', {})
+        before_text = pseudo_elements.get('before', {}).get('content', '').strip('"')
+        after_text = pseudo_elements.get('after', {}).get('content', '').strip('"')
+
+        # Filter out -moz-alt-content
+        if '-moz-alt-content' in before_text:
+            before_text = before_text.replace('-moz-alt-content', '')
+        if '-moz-alt-content' in after_text:
+            after_text = after_text.replace('-moz-alt-content', '')
+
+        combined_text = f"{before_text}{element_node['text']}{after_text}".strip()
+        element_node['text'] = combined_text
+    
+        children_ids = node_data.get('children', [])
+        return element_node, children_ids
+
     def get_selector_and_xpath(self, idx: int) -> (str, str):  # type: ignore
         try:
-            selector = self.get_selector(idx)
-            xpath = self.get_xpath(idx)
+            selector = self._get_selector(idx)
+            xpath = self._get_xpath(idx)
             return selector, xpath
         except:
             print(f"can't locate element")
 
     @staticmethod
     def process_element_contents(element: ElementNode) -> str:
-        # TODO Add appropriate interactive element information, currently only processing interactive elements with text attributes
+        # TODO Add appropriate interactive element information, currently only processing interactive elements with text attributes   
         html_text = ActiveElements.get_element_value(element)
         if html_text is None:
             return ""
@@ -367,7 +366,6 @@ class HTMLTree:
 
     def get_element_value(self, element_id: int) -> str:
         return self.element_value[str(element_id)]
-
 
 __all__ = [
     "HTMLTree"

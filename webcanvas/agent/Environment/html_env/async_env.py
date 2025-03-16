@@ -11,16 +11,16 @@ from PIL import Image
 from io import BytesIO
 import asyncio
 import base64
-import re
-
 from .actions import Action, ActionTypes
 from .build_tree import HTMLTree
 from .utils import stringfy_value
-import time
 
 from webcanvas.agent.Prompt import *
 from webcanvas.logs import logger
+import importlib.resources as resources
 
+from playwright.async_api import Browser as PlaywrightBrowser
+from webcanvas.agent.Environment.html_env.context import BrowserContextConfig, BrowserContext, BrowserSession
 
 class ActionExecutionError(Exception):
     """Custom action execution exception class"""
@@ -68,35 +68,89 @@ class AsyncHTMLEnvironment:
         self.context = None
         self.browser = None
         self.proxy = {"server": proxy_server} if proxy_server else None
+        self.config = BrowserContextConfig()
+        self.browser_context = BrowserContext()
+    
+    async def get_browser(self) -> PlaywrightBrowser:
+        if self.browser is None:
+            self.browser = await self.setup()
+        return self.browser
+
+    async def _initialize_session(self) -> BrowserSession:
+        """Initialize the browser session"""
+        logger.debug('Initializing browser context')
+
+        browser = await self.get_browser()
+        self.browser_context.browser = browser
+        context = await self.browser_context._get_context(browser)
+        self._page_event_handler = None
+
+        # Get or create a page to use
+        pages = context.pages
+
+        self.browser_context.session = BrowserSession(
+            context=context,
+            cached_state=None,
+        )
+
+        active_page = None
+
+        # If no target ID or couldn't find it, use existing page or create new
+        if not active_page:
+            if pages:
+                active_page = pages[0]
+                logger.debug('Using existing page')
+            else:
+                active_page = await context.new_page()
+                logger.debug('Created new page')
+
+        # Bring page to front
+        await active_page.bring_to_front()
+        await active_page.wait_for_load_state('load')
+
+        return self.browser_context.session
 
     async def page_on_handler(self, page):
         self.page = page
-
-    async def setup(self, start_url: str) -> None:
+    
+    async def setup(self, start_url: str) -> PlaywrightBrowser:
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.firefox.launch(
+        self.browser = await self.playwright.chromium.launch(
             # channel='chrome', # use personal chrome
-            firefox_user_prefs={"media.eme.enabled": False, "browser.eme.ui.enabled": False}, # disable DRM
+            # firefox_user_prefs={"media.eme.enabled": False, "browser.eme.ui.enabled": False}, # disable DRM
             headless=self.headless,
             slow_mo=self.slow_mo,
             proxy=self.proxy,
             args=[
-                '--disable-extensions',
                 '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-gpu',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--disable-background-timer-throttling',
+                '--disable-popup-blocking',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-window-activation',
+                '--disable-focus-on-load',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--no-startup-window',
+                '--window-position=0,0',
+                # disable web security
                 '--disable-web-security',
+				'--disable-site-isolation-trials',
+				'--disable-features=IsolateOrigins,site-per-process',
             ]
         )
         self.context = await self.browser.new_context(
             viewport=self.viewport_size,
             device_scale_factor=1,
             locale=self.locale,
-            proxy=self.proxy
+            proxy=self.proxy,
         )
         self.context.on("page", self.page_on_handler)
         if start_url:
             self.page = await self.context.new_page()
+            await self.page.wait_for_load_state()
             # await self.page.set_viewport_size({"width": 1080, "height": 720}) if not self.mode == "dom" else None
             await self.page.goto(start_url, timeout=20000)
             await self.update_html_content()
@@ -104,82 +158,37 @@ class AsyncHTMLEnvironment:
             self.page = await self.context.new_page()
             # await self.page.set_viewport_size({"width": 1080, "height": 720}) if not self.mode == "dom" else None
             self.html_content = await self.page.content()
+        await self._initialize_session()
         # self.last_page = self.page
-    
+        return self.browser
+
     async def update_html_content(self):
-        await self.page.wait_for_load_state("load",timeout=20000)
+        await self.page.wait_for_load_state("load")
         await self.page.wait_for_timeout(2000)
         self.html_content = await self.page.content()
 
-    async def get_obs(self) -> Union[str, Tuple[str, str]]:
+    async def _build_html_tree(self) -> str:
+        """evaluate the js code to build the html tree"""
+        self.tree.__init__()
+        js_code = resources.read_text('webcanvas.agent.Environment.html_env', 'buildDomTree.js')
+        try:
+            eval_page = await self.page.evaluate(js_code)
+        except Exception as e:
+            logger.error('Error evaluating JavaScript: %s', e)
+            raise
+        # logger.info("successfully execute js code")
+        return self.tree._build_dom_tree(eval_page)
+
+    async def _get_obs(self) -> Union[str, Tuple[str, str]]:
+        logger.info("_get_obs")
         observation = ""
         observation_VforD = ""
         try:
             if not self.html_content.strip():
-                await self.retry_html_content()
-            self.tree.fetch_html_content(self.html_content)
-            logger.info("-- Successfully fetch html content")
+                await self.get_html_content()
             tab_name = await self.page.title()
-            # Get selectors of invisible elements
-            invisible_elements = await self.page.evaluate('''() => {
-                var allElements = document.querySelectorAll('*');
-                var invisibleElements = [];
-                function getSelector(element) {
-                    if (!element || element.nodeType !== 1) {
-                        throw new Error("Invalid DOM element provided.");
-                    }
-                    let selectorParts = [];
-                    let currentElement = element;
-                    while (currentElement) {
-                        let tagName = currentElement.tagName.toLowerCase();
-                        if (currentElement.id) {
-                            selectorParts.unshift(`#${currentElement.id}`);
-                            break;
-                        }
-                        let className = currentElement.className;
-                        if (className) {
-                            if (typeof className === "object" && "baseVal" in className) {
-                                className = className.baseVal; 
-                            }
-                            className = className.trim().split(/\s+/).sort().join('.');
-                            tagName += `.${className}`;
-                        }
-                        let siblingIndex = 1;
-                        let sibling = currentElement.previousElementSibling;
-                        while (sibling) {
-                            if (sibling.nodeType === 1) {
-                                siblingIndex++;
-                            }
-                            sibling = sibling.previousElementSibling;
-                        }
-                        if (currentElement.parentElement && currentElement.parentElement.children.length > 1) {
-                            tagName += `:nth-child(${siblingIndex})`;
-                        }
-                        selectorParts.unshift(tagName);
-                        currentElement = currentElement.parentElement;
-                        if (currentElement) {
-                            selectorParts.unshift(" > ");
-                        }
-                    }
-                    return selectorParts.length > 0 ? selectorParts.join("").replace(/ > $/, ""):"";
-                }                                                  
-                allElements.forEach(function(element) {
-                    const selector = getSelector(element);
-                    var styles = window.getComputedStyle(element);
-                    var isInvisible = (
-                        styles.getPropertyValue('display') === 'none' ||
-                        styles.getPropertyValue('visibility') === 'hidden' ||
-                        styles.getPropertyValue('opacity') === '0'
-                    );
-                    if (isInvisible) {
-                        invisibleElements.push(selector);
-                    }
-                });
-                return invisibleElements;
-            }''')
-            self.tree.invisible_elements = invisible_elements
-            # logger.info(f"invisible elements: {invisible_elements}")
-            dom_tree = self.tree.build_dom_tree()
+            dom_tree = await self._build_html_tree()
+            logger.info("-- Successfully fetch html content")
             observation = f"current web tab name is \'{tab_name}\'\n" + dom_tree
             if self.mode in ["d_v", "dom_v_desc", "vision_to_dom"]:
                 observation_VforD = await self.capture()
@@ -196,63 +205,42 @@ class AsyncHTMLEnvironment:
         await self.setup(start_url)
 
     async def click(self, action):
-        try:
-            label, element_id, _ = self.tree.get_tag_name(
-                self.tree.elementNodes[action["element_id"]])
-            action.update({"element_id": element_id,
-                           "element_name": label})
-            selector, xpath = self.tree.get_selector_and_xpath(
-                action["element_id"])
-        except Exception as e:
-            logger.error(
-                f"selector:{selector},label_name:{label},element_id: {element_id},error ({e}) in click action.")
-        if label == "link":
-            try:
-                element = self.tree.elementNodes[element_id]
-                url = element["attributes"].get("href")
-                if bool(urlparse(url).netloc) is False:
-                    base_url = self.page.url()
-                    url = urljoin(base_url, url)
-                # self.last_page = self.page
-                # self.page = await self.context.new_page()
-                await self.page.goto(url, timeout=10000)
-                await self.update_html_content()
-            except:
-                try:
-                    # self.last_page = self.page
-                    selector = rf"{selector}"
-                    await self.page.evaluate(f'''(selector) => {{
-                        var element = document.querySelector(selector);
-                        if (element) {{
-                            element.click();   
-                        }} 
-                    }}''', selector)
-                    await self.update_html_content()
-                except Exception as e:
-                    raise e
-        else:
-            try:
-                try:
-                    await self.page.locator(selector).click()
-                except:
-                    selector = rf"{selector}"
-                    await self.page.evaluate(f'''(selector) => {{
-                        var element = document.querySelector(selector);
-                        if (element) {{
-                            element.click();   
-                        }} 
-                    }}''', selector)
-                await self.update_html_content()
-            except Exception as e:
-                raise e
+        session = self.browser_context.session
+        element_node = self.tree.pruningTreeNode[action["element_id"]]
+        initial_pages = len(session.context.pages)
 
+        if await self.browser_context.is_file_uploader(element_node):
+            msg = f'Index {self.tree.nodeDict.index(action["element_id"])} - has an element which opens file upload dialog. To upload files please use a specific function to upload files '
+            logger.info(msg)
+            return
+        msg = None
+        try:
+            download_path = await self.browser_context._click_element_node(element_node, self.tree.pruningTreeNode)
+            if download_path:
+                msg = f'💾  Downloaded file to {download_path}'
+            else:
+                msg = f'🖱️  Clicked button with index {self.tree.nodeDict.index(action["element_id"])}'
+
+            # logger.info(msg)
+            logger.debug(f'Element xpath: {element_node.get("xpath")}')
+            if len(session.context.pages) > initial_pages:
+                new_tab_msg = 'New tab opened - switching to it'
+                msg += f' - {new_tab_msg}'
+                logger.info(new_tab_msg)
+                await self.browser_context.switch_to_tab(-1)
+            await self.update_html_content()
+            return 
+        except Exception as e:
+            logger.warning(f'Element not clickable with index {self.tree.nodeDict.index(action["element_id"])} - most likely the page changed')
+            return 
+    
     async def goto(self, action):
-        await self.load_page_with_retry(action['url'])
+        await self.browser_context.navigate_to(action['url'])
         await self.update_html_content()
 
     async def fill_search(self, action):
         try:
-            label, element_id, _ = self.tree.get_tag_name(
+            label, element_id, _ = self.tree.resolve_element_semantics(
                 self.tree.elementNodes[action["element_id"]])
             action.update({"element_id": element_id,
                            "element_name": label})
@@ -283,53 +271,24 @@ class AsyncHTMLEnvironment:
                 await self.update_html_content()
             except Exception as e:
                 raise e
-
+        
     async def fill_form(self, action):
-        try:
-            label, element_id, _ = self.tree.get_tag_name(
-                self.tree.elementNodes[action["element_id"]])
-            action.update({"element_id": element_id,
-                           "element_name": label})
-            selector, xpath = self.tree.get_selector_and_xpath(
-                action["element_id"])
-        except Exception as e:
-            logger.error(
-                f"selector:{selector},label_name:{label},element_id: {element_id},error ({e}) in fill_form action.")
-        try:
-            value = stringfy_value(action['fill_text'])
-            await self.page.locator(selector).fill(value)
-            await self.update_html_content()
-        except:
-            try:
-                selector = rf"{selector}"
-                value = stringfy_value(action['fill_text'])
-                await self.page.evaluate(f'''(selector) => {{
-                        var element = document.querySelector(selector);
-                        if (element) {{
-                            element.value = '{value}';
-                            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        }}
-                    }}
-                ''', selector)
-                await self.update_html_content()
-            except Exception as e:
-                raise e
+        element_node = self.tree.elementNodes[action["element_id"]]
+        await self.browser_context._input_text_element_node(element_node, action["fill_text"], self.tree.pruningTreeNode)
+        await self.update_html_content()
 
     async def search(self, action):
-        await self.page.goto("https://www.google.com/search?q="+action["fill_text"], timeout=30000)
-        await self.page.wait_for_timeout(2000)
+        page = await self.browser_context.get_current_page()
+        await page.goto(f'https://www.google.com/search?q={action["fill_text"]}&udm=14')
         await self.update_html_content()
 
     async def go_back_last_page(self, action):
-        # self.page = self.last_page
-        # self.last_page = self.page
-        await self.page.go_back()
-        await self.page.wait_for_timeout(2000)
+        await self.browser_context.go_back()
         await self.update_html_content()
 
     async def select_option(self, action):
         try:
-            label, element_id, _ = self.tree.get_tag_name(
+            label, element_id, _ = self.tree.resolve_element_semantics(
                 self.tree.elementNodes[action["element_id"]])
             action.update({"element_id": element_id,
                            "element_name": label})
@@ -375,7 +334,7 @@ class AsyncHTMLEnvironment:
 
     async def hover(self, action):
         try:
-            label, element_id, _ = self.tree.get_tag_name(
+            label, element_id, _ = self.tree.resolve_element_semantics(
                 self.tree.elementNodes[action["element_id"]])
             action.update({"element_id": element_id,
                            "element_name": label})
@@ -543,7 +502,8 @@ class AsyncHTMLEnvironment:
 
     async def get_page(self, element_id: int) -> Tuple[Page, str]:
         try:
-            selector = self.tree.get_selector(element_id)
+            # selector = self.tree.get_selector(element_id)
+            selector = self.tree._get_selector(self.tree.elementNodes[element_id])
         except:
             selector = ""
         return self.page, selector
@@ -611,91 +571,45 @@ class AsyncHTMLEnvironment:
                             f"Max retries {retries} reached, giving up.")
                         raise
 
-    async def retry_html_content(self, max_retries=3):
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                await self.page.reload()
-                await self.update_html_content()
-                if not self.html_content.strip():
-                    raise ValueError("Page content is empty")
-                return self.html_content
-            except PlaywrightError as e:
-                logger.error(
-                    f"Page load timed out or encountered an error, retrying ({retry_count + 1}/{max_retries}): {e}")
-                retry_count += 1
-        logger.info("Maximum retries reached, unable to load the page.")
+    async def get_obs(self) -> str:
+        """Get the current state of the browser"""
+        await self.browser_context._wait_for_page_and_frames_load()
+        session = self.browser_context.session
+        session.cached_state = await self._update_state()
+        logger.info("-- Successfully fetch html content")
+        if self.config.cookies_file:
+            asyncio.create_task(self.browser_context.save_cookies())
+        return session.cached_state
 
-    async def test_click_action(self, selector):
-        await self.page.wait_for_selector(selector)
-        is_clickable = await self.page.is_enabled(selector)
-        selector = rf"{selector}"
+    async def _update_state(self) -> str:
+        """Update and return state."""
+        session = self.browser_context.session
+
+        # Check if current page is still valid, if not switch to another available page
         try:
-            await self.page.evaluate(f'''(selector) => {{
-                var element = document.querySelector(selector);
-                if (element) {{
-                    element.click();   
-                }} 
-            }}''', selector)
-            logger.info("Click Success")
+            page = await self.browser_context.get_current_page()
+            # Test if page is still accessible
+            await page.evaluate('1')
         except Exception as e:
-            logger.info("Click Failed:", e)
-        await self.page.wait_for_timeout(20000)
+            logger.debug(f'Current page is no longer accessible: {str(e)}')
+            # Get all available pages
+            pages = session.context.pages
+            if pages:
+                page = await self.browser_context._get_current_page(session)
+                logger.debug(f'Switched to page: {await page.title()}')
+            else:
+                raise Exception('Browser closed: no valid pages available')
 
-    async def test_select_option_action(self, selector, value):
-        optgroup_values = await self.page.evaluate(f'''(selector) => {{
-                var values = [];
-                var selectElement = document.querySelector(selector);
-                var options = selectElement.querySelectorAll('option');
-                for (var option of options) {{
-                    values.push(option.innerText);
-                }}
-                var optgroups = selectElement.querySelectorAll('optgroup');
-                for (var optgroup of optgroups) {{
-                    var options = optgroup.querySelectorAll('option');
-                    for (var option of options) {{
-                        values.push(option.innerText);
-                    }}   
-                }}
-                return values;
-            }}''', selector)
-        best_option = [-1, "", -1]
-        for i, option in enumerate(optgroup_values):
-            similarity = SequenceMatcher(None, option, value).ratio()
-            if similarity > best_option[2]:
-                best_option = [i, option, similarity]
-        await self.page.evaluate(f'''(selector) => {{
-            var selectElement = document.querySelector(selector);
-            var options = selectElement.querySelectorAll('option');
-            for (var option of options) {{
-                if (option.innerText === "{best_option[1]}") {{
-                    option.selected = true;
-                    selectElement.dispatchEvent(new Event('change'));
-                    return;
-                }}
-            }}
-            var optgroups = selectElement.querySelectorAll('optgroup');
-            for (var optgroup of optgroups) {{
-                var options = optgroup.querySelectorAll('option');
-                for (var option of options) {{
-                    if (option.innerText === "{best_option[1]}") {{
-                        option.selected = true;
-                        selectElement.dispatchEvent(new Event('change'));
-                        return;
-                    }}
-                }}
-            }}
-        }}''', selector)
-        await self.page.wait_for_timeout(2000)
-
-    async def test_fill_form_action(self, selector, value):
-        selector = rf"{selector}"
-        await self.page.evaluate(f'''(selector) => {{
-                var element = document.querySelector(selector);
-                if (element) {{
-                    element.value = '{value}';
-                    element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-            }}
-        ''', selector)
-        await self.page.wait_for_timeout(2000)
+        try:
+            if not self.html_content.strip():
+                await self.browser_context.get_page_html()
+            content = await self._build_html_tree()
+            self.current_state = content
+            self.browser_context.state = content
+            return self.current_state
+        except Exception as e:
+            logger.error(f'Failed to update state: {str(e)}')
+            # Return last known good state if available
+            if hasattr(self, 'current_state'):
+                return self.current_state
+            raise
